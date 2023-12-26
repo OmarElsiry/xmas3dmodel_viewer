@@ -1,8 +1,6 @@
-// ignore_for_file: use_build_context_synchronously
 import 'dart:io';
 import 'dart:async';
 import 'dart:isolate';
-import 'dart:math';
 import 'package:flutter/material.dart';
 import 'package:image_gallery_saver/image_gallery_saver.dart';
 import 'package:path_provider/path_provider.dart';
@@ -12,20 +10,25 @@ import 'package:device_info_plus/device_info_plus.dart';
 import 'package:package_info_plus/package_info_plus.dart';
 import 'package:camera/camera.dart';
 import 'package:flutter/foundation.dart';
-import 'package:image/image.dart' as img;
 import 'package:o3d/o3d.dart';
+import 'dart:math';
+import 'package:image/image.dart' as img;
 
-class CameraPreviewPage extends StatefulWidget {
-  const CameraPreviewPage({super.key});
+class GamePage extends StatefulWidget {
+  final String modelUrl;
+
+  const GamePage({super.key, required this.modelUrl});
 
   @override
-  CameraPreviewPageState createState() => CameraPreviewPageState();
+  _GamePageState createState() => _GamePageState();
 }
 
-class CameraPreviewPageState extends State<CameraPreviewPage> {
+class _GamePageState extends State<GamePage> {
   late CameraController _controller;
   bool isCameraInitialized = false;
-  String? modelPath = 'assets/MyModel.glb'; // Replace with your model path
+  bool isModelDownloading = true;
+  late Future<void> _initializeControllerFuture;
+  late File modelFile = File(''); // Initialize with an empty file
   bool isModelVisible = true;
   final screenshotController = ScreenshotController();
   late final DeviceInfoPlugin deviceInfoPlugin;
@@ -37,6 +40,9 @@ class CameraPreviewPageState extends State<CameraPreviewPage> {
     _initializeCamera();
     requestManageExternalStoragePermission();
     initializeDeviceInfoAndPackageName();
+    setState(() {
+      isModelDownloading = true;
+    });
   }
 
   Future<void> initializeDeviceInfoAndPackageName() async {
@@ -45,12 +51,11 @@ class CameraPreviewPageState extends State<CameraPreviewPage> {
     packageName = packageInfo.packageName;
   }
 
-  // start the back-front camera and handle the err if it is not available
   Future<void> _initializeCamera() async {
     final cameras = await availableCameras();
     if (cameras.isNotEmpty) {
       _controller = CameraController(cameras[0], ResolutionPreset.medium);
-      await _controller.initialize();
+      _initializeControllerFuture = _controller.initialize();
       if (mounted) {
         setState(() {
           isCameraInitialized = true;
@@ -59,20 +64,20 @@ class CameraPreviewPageState extends State<CameraPreviewPage> {
     }
   }
 
-  @override
-  void dispose() {
-    _controller.dispose();
-    super.dispose();
+  Future<void> requestManageExternalStoragePermission() async {
+    if (await Permission.manageExternalStorage.isGranted) {
+      // Permission is already granted, do nothing
+      return;
+    }
+
+    if (await Permission.manageExternalStorage.request().isGranted) {
+      // Permission is granted
+    } else {
+      // Permission is denied
+      // Handle the case where the user denies the permission
+    }
   }
 
-  //show/hide the 3d-model
-  void toggleModelVisibility() {
-    setState(() {
-      isModelVisible = !isModelVisible;
-    });
-  }
-
-  // capuring the screenshot and save it
   Future<void> takeAndSavePhoto(BuildContext context) async {
     final localContext = context;
 
@@ -93,14 +98,13 @@ class CameraPreviewPageState extends State<CameraPreviewPage> {
       final file = File(fullPath);
       await file.writeAsBytes(imageBytes!);
 
-      // view bar showing if it succeeded to save img
       ScaffoldMessenger.of(localContext).showSnackBar(
         const SnackBar(
           content: Text('Photo saved in external storage directory'),
         ),
       );
 
-      // Save to Gallery function
+      // Save to Gallery logic
       saveScreenshot(imageBytes);
     } catch (e) {
       if (kDebugMode) {
@@ -112,7 +116,18 @@ class CameraPreviewPageState extends State<CameraPreviewPage> {
     }
   }
 
-  // save screenshot as a name of "Screenshot"+"the current date"
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  void toggleModelVisibility() {
+    setState(() {
+      isModelVisible = !isModelVisible;
+    });
+  }
+
   void saveScreenshot(Uint8List bytes) async {
     final time = DateTime.now()
         .toIso8601String()
@@ -120,14 +135,9 @@ class CameraPreviewPageState extends State<CameraPreviewPage> {
         .replaceAll('.', '_');
     final name = 'ScreenShot_$time';
     await ImageGallerySaver.saveImage(bytes, name: name);
-
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(
-        content: Text('Image saved to gallery.'),
-      ),
-    );
   }
 
+// encode the screenshote to bytes in parallel to avoid time complexity issues
   Future<void> encodeAndWriteImageInIsolate(
       Uint8List imageBytes, String filePath) async {
     final receivePort = ReceivePort();
@@ -156,6 +166,7 @@ class CameraPreviewPageState extends State<CameraPreviewPage> {
       final SendPort responsePort = message['responsePort'];
 
       try {
+        // convert img to bytes
         final img.Image capturedImage = img.decodeImage(imageBytes)!;
         final List<int> jpegBytes = img.encodeJpg(capturedImage, quality: 90);
 
@@ -170,22 +181,6 @@ class CameraPreviewPageState extends State<CameraPreviewPage> {
     });
   }
 
-  // asj for the storage permission to save the screenshot or view it
-  void requestManageExternalStoragePermission() async {
-    if (await Permission.manageExternalStorage.isGranted) {
-      // Permission is already granted, do nothing
-      return;
-    }
-
-    //if storage permission isn't granted ,request it
-    if (await Permission.manageExternalStorage.request().isGranted) {
-      // Permission is granted
-    } else {
-      // TODO Permission is denied
-    }
-  }
-
-  // build
   @override
   Widget build(BuildContext context) {
     if (!isCameraInitialized) {
@@ -217,16 +212,21 @@ class CameraPreviewPageState extends State<CameraPreviewPage> {
           fit: StackFit.expand,
           children: [
             CameraPreview(_controller), // Camera preview as the background
-
-            Positioned.fill(
-              child: AnimatedOpacity(
-                duration: const Duration(milliseconds: 300),
-                opacity: isModelVisible ? 1.0 : 0.0,
-                child: O3D.asset(
-                  src: modelPath!,
-                  ar: true,
-                  autoRotate: true,
-                  cameraControls: true,
+            Align(
+              alignment: Alignment.center,
+              child: SizedBox(
+                width: MediaQuery.sizeOf(context).width, // adjust as needed
+                height:
+                    MediaQuery.sizeOf(context).height * 0.9, // adjust as needed
+                child: AnimatedOpacity(
+                  duration: const Duration(milliseconds: 300),
+                  opacity: isModelVisible ? 1 : 0.0,
+                  child: O3D.network(
+                    src: widget.modelUrl,
+                    ar: true,
+                    autoRotate: true,
+                    cameraControls: true,
+                  ),
                 ),
               ),
             ),
